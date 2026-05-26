@@ -28,34 +28,22 @@ jobs:
           git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git $GITHUB_WORKSPACE/depot_tools
           echo "$GITHUB_WORKSPACE/depot_tools" >> $GITHUB_PATH
 
-      # Step 1: Clean and download the vast Chromium project files first
+      # Step 1: Clean and download the massive Chromium project files first
       - name: Fetch Minimal Chromium Source Tree
         run: |
           fetch --nohooks --no-history chromium
           cd src
           gclient sync --no-history
 
-      # Step 2: Restore your patch file by checking it out again from your fork branch
-      - name: Restore Patch File From Fork
-        uses: actions/checkout@v4
-        with:
-          sparse-checkout: |
-            .github/patches
-          sparse-checkout-cone-mode: false
-          path: patch_restore
-
-      # Step 3: Target the restored path securely without workspace path collision errors
-      - name: Apply Binary Support Git Patch
+      # Step 2: Download your patch file directly via curl to bypass directory wipeout bugs
+      - name: Download and Apply Binary Support Git Patch
         run: |
           cd src
-          # Points directly to the isolated recovery path location
-          git apply ../patch_restore/.github/patches/native_messaging_binary.patch
-
-      - name: Apply Binary Support Git Patch
-        run: |
-          cd src
-          # Applies the native_messaging_binary.patch file saved in the root of your repository
-          git apply ../.github/patches/native_messaging_binary.patch
+          # Pulls the raw unredacted patch text directly using the GitHub API
+          curl -sSL "https://githubusercontent.com{{ github.repository }}/${{ github.ref_name }}/.github/patches/native_messaging_binary.patch" -o native_messaging_binary.patch
+          
+          # Applies the newly downloaded file directly inside the target src directory
+          git apply native_messaging_binary.patch
 
       - name: Set up Advanced Compiler Caching
         uses: hendrikmuhs/ccache-action@v1.2
