@@ -25,7 +25,7 @@ jobs:
 
       - name: Install Google Depot Tools
         run: |
-          git clone https://googlesource.com $GITHUB_WORKSPACE/depot_tools
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git $GITHUB_WORKSPACE/depot_tools
           echo "$GITHUB_WORKSPACE/depot_tools" >> $GITHUB_PATH
 
       - name: Fetch Minimal Chromium Source Tree
