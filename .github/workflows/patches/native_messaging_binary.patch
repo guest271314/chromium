@@ -1,0 +1,139 @@
+diff --git a/chrome/browser/extensions/api/messaging/native_message_process_host.h b/chrome/browser/extensions/api/messaging/native_message_process_host.h
+index 5ff87ce..a31f24c 100644
+--- a/chrome/browser/extensions/api/messaging/native_message_process_host.h
++++ b/chrome/browser/extensions/api/messaging/native_message_process_host.h
+@@ -29,14 +29,18 @@ class NativeMessageProcessHost : public NativeMessageHost {
+   ~NativeMessageProcessHost() override;
+ 
+   // NativeMessageHost implementation.
+   void Start(Client* client) override;
+   void OnMessage(const std::string& message) override;
++  void OnBinaryMessage(const std::vector<uint8_t>& binary_message) override;
+ 
+  private:
+   class Core;
+ 
+   void ShutdownOnIOThread();
+   void OnMessageRead(const std::string& message);
++  void OnBinaryMessageReceived(std::vector<uint8_t> raw_payload);
+   void OnChannelError();
+ 
+   const std::string source_extension_id_;
+diff --git a/chrome/browser/extensions/api/messaging/native_message_process_host.cc b/chrome/browser/extensions/api/messaging/native_message_process_host.cc
+index 1024e24..bc43f4c 100644
+--- a/chrome/browser/extensions/api/messaging/native_message_process_host.cc
++++ b/chrome/browser/extensions/api/messaging/native_message_process_host.cc
+@@ -51,20 +51,20 @@ class NativeMessageProcessHost::Core {
+ 
+   void Start() {
+     DCHECK(io_task_runner_->RunsTasksInCurrentSequence());
+     ReadNextMessage();
+   }
+ 
+   void WriteMessage(const std::string& message) {
+     DCHECK(io_task_runner_->RunsTasksInCurrentSequence());
+     WriteBuffer(reinterpret_cast<const uint8_t*>(message.data()), message.size());
+   }
+ 
+  private:
+   void ReadNextMessage() {
+     uint32_t message_size = 0;
+     int read_result = read_file_.ReadAtCurrentPos(reinterpret_cast<char*>(&message_size), kMessageHeaderSize);
+ 
+     if (read_result != static_cast<int>(kMessageHeaderSize)) {
+       HandleError();
+       return;
+     }
+@@ -73,18 +73,18 @@ class NativeMessageProcessHost::Core {
+     message_size = base::ByteSwap(message_size);
+ #endif
+ 
+     if (message_size > kMaximumNativeMessageSize) {
+       LOG(ERROR) << "Native Messaging host sent a message size that exceeds maximum thresholds.";
+       HandleError();
+       return;
+     }
+ 
+-    std::string message_body;
+-    message_body.resize(message_size);
++    std::vector<uint8_t> raw_payload(message_size);
+     if (message_size > 0) {
+-      int body_read_result = read_file_.ReadAtCurrentPos(&message_body, message_size);
++      int body_read_result = read_file_.ReadAtCurrentPos(reinterpret_cast<char*>(raw_payload.data()), message_size);
+       if (body_read_result != static_cast<int>(message_size)) {
+         HandleError();
+         return;
+       }
+     }
+ 
+     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+-        FROM_HERE, base::BindOnce(&NativeMessageProcessHost::OnMessageRead, host_, message_body));
++        FROM_HERE, base::BindOnce(&NativeMessageProcessHost::OnBinaryMessageReceived, host_, std::move(raw_payload)));
+ 
+     io_task_runner_->PostTask(FROM_HERE, base::BindOnce(&Core::ReadNextMessage, base::Unretained(this)));
+   }
+@@ -131,10 +131,15 @@ void NativeMessageProcessHost::Start(Client* client) {
+ void NativeMessageProcessHost::OnMessage(const std::string& message) {
+   io_task_runner_->PostTask(FROM_HERE, base::BindOnce(&Core::WriteMessage, base::Unretained(core_.get()), message));
+ }
+ 
++void NativeMessageProcessHost::OnBinaryMessage(const std::vector<uint8_t>& binary_message) {
++  io_task_runner_->PostTask(FROM_HERE, base::BindOnce(&Core::WriteBuffer, base::Unretained(core_.get()), binary_message.data(), binary_message.size()));
++}
++
+ void NativeMessageProcessHost::OnMessageRead(const std::string& message) {
+-  if (client_) {
+-    client_->OnMessage(message);
+-  }
++  // Kept for backward compatibility signatures if necessary.
+ }
+ 
++void NativeMessageProcessHost::OnBinaryMessageReceived(std::vector<uint8_t> raw_payload) {
++  if (!client_) return;
++  extensions::Message response_message;
++  response_message.data = std::move(raw_payload);
++  response_message.format = extensions::MessageDataType::kStructuredClone;
++  client_->OnMessage(response_message);
++}
++
+ void NativeMessageProcessHost::OnChannelError() {
+diff --git a/extensions/browser/api/messaging/native_message_host.h b/extensions/browser/api/messaging/native_message_host.h
+index ad05d05..111b0d0 100644
+--- a/extensions/browser/api/messaging/native_message_host.h
++++ b/extensions/browser/api/messaging/native_message_host.h
+@@ -32,10 +32,11 @@ class NativeMessageHost {
+   virtual ~NativeMessageHost() {}
+ 
+   // Starts the host. The |client| must outlive the host or until the channel is closed.
+   virtual void Start(Client* client) = 0;
+ 
+   // Sends a message to the native messaging host.
+   virtual void OnMessage(const std::string& message) = 0;
++  virtual void OnBinaryMessage(const std::vector<uint8_t>& binary_message) = 0;
+ };
+ 
+ }  // namespace extensions
+diff --git a/extensions/browser/api/messaging/extension_message_port.cc b/extensions/browser/api/messaging/extension_message_port.cc
+index a31ded9..592e631 100644
+--- a/extensions/browser/api/messaging/extension_message_port.cc
++++ b/extensions/browser/api/messaging/extension_message_port.cc
+@@ -35,14 +35,24 @@ ExtensionMessagePort::~ExtensionMessagePort() {
+ void ExtensionMessagePort::DispatchOnMessage(const Message& message) {
++  if (IsNativeMessaging()) {
++    NativeMessageProcessHost* native_host = GetNativeMessagingHost();
++    if (native_host) {
++      if (message.format == MessageDataType::kStructuredClone) {
++        native_host->OnBinaryMessage(message.data);
++      } else {
++        native_host->OnMessage(message.data_as_json_string);
++      }
++    }
++    return;
++  }
++
+   for (const auto& receiver : receivers_) {
+     if (receiver->IsValid()) {
+       receiver->DispatchOnMessage(message);
+     }
+   }
+ }

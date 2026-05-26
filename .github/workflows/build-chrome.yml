@@ -1,0 +1,73 @@
+name: Build Patched Chromium Component Binary
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: # Allows you to manually trigger the build from the Actions UI
+
+jobs:
+  build_chromium:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Free Disk Space on Runner
+        run: |
+          # Aggressively delete unnecessary system packages to maximize runner disk room for Chromium
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo docker image prune --all --force
+
+      - name: Checkout Your Fork Repository
+        uses: actions/checkout@v4
+
+      - name: Install Google Depot Tools
+        run: |
+          git clone https://googlesource.com $GITHUB_WORKSPACE/depot_tools
+          echo "$GITHUB_WORKSPACE/depot_tools" >> $GITHUB_PATH
+
+      - name: Fetch Minimal Chromium Source Tree
+        run: |
+          # Fetch only the latest revision without git history logs to conserve disk space
+          fetch --nohooks --no-history chromium
+          cd src
+          gclient sync --no-history
+
+      - name: Apply Binary Support Git Patch
+        run: |
+          cd src
+          # Applies the native_messaging_binary.patch file saved in the root of your repository
+          git apply ../.github/patches/native_messaging_binary.patch
+
+      - name: Set up Advanced Compiler Caching
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ runner.os }}-chromium-ccache
+          max-size: 10G
+
+      - name: Generate High-Efficiency GN Args
+        run: |
+          cd src
+          # Configures an extreme component-split build to prevent standard link out-of-memory errors
+          gn gen out/Default --args='
+            is_debug=false 
+            is_component_build=true 
+            symbol_level=0 
+            blink_symbol_level=0
+            cc_wrapper="ccache"
+            use_goma=false
+          '
+
+      - name: Compile Patched Target Subsystem
+        run: |
+          cd src
+          # Limits threads to 2 to ensure compilation does not exceed host RAM capacities
+          autoninja -C out/Default chrome -j 2
+
+      - name: Compress and Upload Build Outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: patched-chromium-linux-x64
+          path: |
+            src/out/Default/chrome
+            src/out/Default/*.so
+          retention-days: 5
