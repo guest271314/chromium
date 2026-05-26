@@ -1,9 +1,12 @@
 name: Build Patched Chromium Component Binary
 on:
   push:
-    branches: [ main ]
-  workflow_dispatch: # Allows you to manually trigger the build from the Actions UI
-
+    branches: 
+      - main
+      - '*' # Triggers on a push to ANY branch you create
+  pull_request:
+    branches: [ main ] # Triggers automatically whenever your PR targeting main is opened or updated
+  workflow_dispatch: # Keeps the manual "Run workflow" button active
 jobs:
   build_chromium:
     runs-on: ubuntu-latest
