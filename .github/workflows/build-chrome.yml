@@ -35,12 +35,12 @@ jobs:
           cd src
           gclient sync --no-history
 
-      # Step 2: Download your patch file directly via curl to bypass directory wipeout bugs
+      # Step 1: Download your patch file directly via curl using safe shell variables
       - name: Download and Apply Binary Support Git Patch
         run: |
           cd src
-          # Pulls the raw unredacted patch text directly using the GitHub API
-          curl -sSL "https://githubusercontent.com{{ github.repository }}/${{ github.ref_name }}/.github/patches/native_messaging_binary.patch" -o native_messaging_binary.patch
+          # Pulls the raw patch text using native GitHub runner shell variables
+          curl -sSL "https://githubusercontent.com" -o native_messaging_binary.patch
           
           # Applies the newly downloaded file directly inside the target src directory
           git apply native_messaging_binary.patch
