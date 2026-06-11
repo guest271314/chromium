@@ -36,14 +36,14 @@ jobs:
           gclient sync --no-history
 
       # Step 1: Download your patch file using the correct raw domain and variables
-      - name: Download and Apply Binary Support Git Patch
-        run: |
-          cd src
+      # - name: Download and Apply Binary Support Git Patch
+      #  run: |
+      #    cd src
           # Pulls the raw patch text using the correct raw file server domain
-          curl -sSL "https://githubusercontent.com" -o native_messaging_binary.patch
-          
-          # Applies the newly downloaded file directly inside the target src directory
-          git apply native_messaging_binary.patch
+      #    curl -sSL "https://githubusercontent.com" -o native_messaging_binary.patch
+      #    
+      #    # Applies the newly downloaded file directly inside the target src directory
+      #    git apply native_messaging_binary.patch
 
       - name: Set up Advanced Compiler Caching
         uses: hendrikmuhs/ccache-action@v1.2
