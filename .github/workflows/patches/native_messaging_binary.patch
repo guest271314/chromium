@@ -91,7 +91,7 @@ index 1024e24..bc43f4c 100644
 +void NativeMessageProcessHost::OnBinaryMessageReceived(std::vector<uint8_t> raw_payload) {
 +  if (!client_) return;
 +  extensions::Message response_message;
-+  response_message.data = std::move(raw_payload);
++  response_message.data = std::string(raw_payload.begin(), raw_payload.end());
 +  response_message.format = extensions::MessageDataType::kStructuredClone;
 +  client_->OnMessage(response_message);
 +}
